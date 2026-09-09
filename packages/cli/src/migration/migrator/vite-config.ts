@@ -174,11 +174,12 @@ export function mergeTsdownConfigFile(
   projectPath: string,
   silent = false,
   report?: MigrationReport,
-): void {
+): boolean {
   const configs = detectConfigs(projectPath);
   if (!configs.tsdownConfig) {
-    return;
+    return false;
   }
+  const createdViteConfig = !configs.viteConfig;
   const viteConfig = ensureViteConfig(projectPath, configs, silent, report);
 
   const fullViteConfigPath = path.join(projectPath, viteConfig);
@@ -187,7 +188,7 @@ export function mergeTsdownConfigFile(
   // For JSON files, merge content directly and delete the file
   if (configs.tsdownConfig.endsWith('.json')) {
     mergeAndRemoveJsonConfig(projectPath, viteConfig, configs.tsdownConfig, 'pack', silent, report);
-    return;
+    return createdViteConfig || !fs.existsSync(fullTsdownConfigPath);
   }
 
   // For TS/JS files, import the config file
@@ -209,6 +210,7 @@ export function mergeTsdownConfigFile(
     `Please manually merge ${displayRelative(fullTsdownConfigPath)} into ${displayRelative(fullViteConfigPath)}, see https://viteplus.dev/guide/migrate#tsdown`,
     report,
   );
+  return createdViteConfig || result.updated;
 }
 
 /**
