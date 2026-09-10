@@ -8891,6 +8891,45 @@ export default defineConfig({
       tsdownConfig: false,
     });
   });
+
+  it('preserves a tsdown config already wired to pack under a different import name', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ name: 'test', devDependencies: { 'vite-plus': 'latest' } }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'vite.config.ts'),
+      `import packConfig from './tsdown.config.js';
+
+export default { pack: packConfig({}) };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'tsdown.config.ts'),
+      `import { defineConfig } from 'tsdown';
+
+export default defineConfig({ entry: 'src/index.ts' });
+`,
+    );
+
+    const originalViteConfig = fs.readFileSync(path.join(tmpDir, 'vite.config.ts'), 'utf8');
+    const report = createMigrationReport();
+    const result = finalizeCoreMigrationForExistingVitePlus(
+      makeWorkspaceInfo(tmpDir, PackageManager.pnpm),
+      true,
+      report,
+    );
+
+    expect(result).toEqual({
+      scripts: false,
+      tsconfigTypes: false,
+      imports: true,
+      tsdownConfig: false,
+    });
+    expect(fs.readFileSync(path.join(tmpDir, 'vite.config.ts'), 'utf8')).toBe(originalViteConfig);
+    expect(report.tsdownImportCount).toBe(0);
+    expect(report.manualSteps).toEqual([]);
+  });
 });
 
 // Regression: templates such as `create-fate` ship a populated vite.config.ts
