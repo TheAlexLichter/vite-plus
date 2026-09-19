@@ -33,6 +33,7 @@ vi.mock('../../utils/constants.js', async (importOriginal) => {
 const {
   rewritePackageJson,
   recordRetainedBuiltinScriptNames,
+  addDependencyLegalInventoryFollowup,
   rewriteStandaloneProject,
   rewriteMonorepo,
   rewriteMonorepoProject,
@@ -876,6 +877,72 @@ describe('rewritePackageJson', () => {
     expect(pkg.devDependencies).toHaveProperty('@vitest/browser-playwright', 'catalog:');
     // The provider's runtime peer dep is preserved.
     expect(pkg.devDependencies).toHaveProperty('playwright', '*');
+  });
+});
+
+describe('dependency legal inventory follow-up', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-test-legal-inventory-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports a purpose-named script without duplicating generic wrappers', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          licenses: 'node scripts/licenses.mjs',
+          check: 'npm run licenses -- --check',
+          audit: 'npm audit',
+          'licensed-feature': 'node scripts/feature.mjs',
+        },
+      }),
+    );
+    const report = createMigrationReport();
+
+    addDependencyLegalInventoryFollowup(tmpDir, [], report);
+    addDependencyLegalInventoryFollowup(tmpDir, [], report);
+
+    expect(report.manualSteps).toEqual([
+      'Re-run project-owned dependency license/notice/attribution inventory scripts after installation and review any generated legal content: `licenses` (workspace root)',
+    ]);
+  });
+
+  it('falls back to commands and includes workspace-owned inventories', () => {
+    fs.mkdirSync(path.join(tmpDir, 'packages/app'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({ scripts: { verify: 'node scripts/notices.mjs --check' } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'packages/app/package.json'),
+      JSON.stringify({ scripts: { 'legal:attribution': 'node tools/generate.mjs' } }),
+    );
+    const report = createMigrationReport();
+
+    addDependencyLegalInventoryFollowup(tmpDir, [{ name: 'app', path: 'packages/app' }], report);
+
+    expect(report.manualSteps[0]).toContain('`verify` (workspace root)');
+    expect(report.manualSteps[0]).toContain('`legal:attribution` (packages/app)');
+  });
+
+  it('ignores broad audit and check script names', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({
+        scripts: { check: 'tsc --noEmit', audit: 'npm audit', oss: 'node oss.mjs' },
+      }),
+    );
+    const report = createMigrationReport();
+
+    addDependencyLegalInventoryFollowup(tmpDir, [], report);
+
+    expect(report.manualSteps).toEqual([]);
   });
 });
 

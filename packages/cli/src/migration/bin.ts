@@ -37,6 +37,7 @@ import { detectWorkspace } from '../utils/workspace.ts';
 import { checkRolldownCompatibility } from './compat/runner.ts';
 import { canFormatWithOxfmt, collectChangedFormatPaths, formatMigratedProject } from './format.ts';
 import {
+  addDependencyLegalInventoryFollowup,
   addFrameworkShim,
   checkVitestVersion,
   checkViteVersion,
@@ -917,6 +918,7 @@ async function executeMigrationPlan(
     plan.packageManager === PackageManager.npm
       ? prepareNpmViteAliasReinstall(workspaceInfo.rootDir, getWorkspaceProjectPaths(workspaceInfo))
       : undefined;
+  addDependencyLegalInventoryFollowup(workspaceInfo.rootDir, workspaceInfo.packages, report);
   updateMigrationProgress('Installing dependencies');
   const finalInstallSummary = await runViteInstall(
     workspaceInfo.rootDir,
@@ -1395,6 +1397,11 @@ async function main() {
     }
 
     if (needsInstall) {
+      addDependencyLegalInventoryFollowup(
+        workspaceInfoOptional.rootDir,
+        workspaceInfoOptional.packages,
+        report,
+      );
       const resolved = await ensureExistingPackageManager();
       updateMigrationProgress('Installing dependencies');
       const resolvedVersion = resolved?.version ?? packageManagerVersion;

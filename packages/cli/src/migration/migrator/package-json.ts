@@ -1,5 +1,7 @@
+import path from 'node:path';
+
 import { rewriteScripts } from '../../../binding/index.js';
-import { PackageManager } from '../../types/index.ts';
+import { PackageManager, type WorkspacePackage } from '../../types/index.ts';
 import {
   VITEST_VERSION,
   VITE_PLUS_NAME,
@@ -22,7 +24,7 @@ import {
   removeManagedVitestEntry,
   setDirectViteEdge,
 } from '../migrator.ts';
-import { type MigrationReport } from '../report.ts';
+import { addManualStep, type MigrationReport } from '../report.ts';
 import {
   BROWSER_PROVIDER_PEER_DEPS,
   hasProviderPeerDependency,
@@ -36,6 +38,7 @@ import {
   VITEST_IS_MANAGED_OVERRIDE,
   type CatalogDependencyResolver,
   type PackageJsonDependencyField,
+  readPackageJsonIfExists,
 } from './shared.ts';
 
 // These package-script names are also Vite+ built-ins (including `format`,
@@ -89,6 +92,65 @@ export function recordRetainedBuiltinScriptNames(
       report.retainedBuiltinScriptNames.push(name);
     }
   }
+}
+
+// Legal-inventory scripts are project policy, not package-manager lifecycle hooks.
+// Match explicit word-like path/name segments only: broad terms such as `audit`,
+// `check`, or `oss` would produce noisy follow-ups in most projects.
+const DEPENDENCY_LEGAL_INVENTORY_SEGMENT =
+  /(?:^|[/:._\\-])(licen[cs]es?|notices?|attributions?)(?=$|[/:._\\-])/i;
+
+/**
+ * Preserve project ownership of generated legal inventories after dependencies
+ * change. This only reports scripts; it deliberately never runs generators or
+ * treats generated legal content as approved.
+ */
+export function addDependencyLegalInventoryFollowup(
+  rootDir: string,
+  workspacePackages: readonly WorkspacePackage[],
+  report: MigrationReport,
+): void {
+  const packageDirs = new Map<string, string>([[path.resolve(rootDir), 'workspace root']]);
+  for (const pkg of workspacePackages) {
+    const packageDir = path.resolve(rootDir, pkg.path);
+    if (!packageDirs.has(packageDir)) {
+      packageDirs.set(packageDir, pkg.path || 'workspace root');
+    }
+  }
+
+  const matches: string[] = [];
+  for (const [packageDir, label] of packageDirs) {
+    const scripts = readPackageJsonIfExists(path.join(packageDir, 'package.json'))?.scripts;
+    if (!scripts) {
+      continue;
+    }
+
+    const entries = Object.entries(scripts).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    );
+    const explicitlyNamed = entries.filter(([name]) =>
+      DEPENDENCY_LEGAL_INVENTORY_SEGMENT.test(name),
+    );
+    // Prefer purpose-named scripts over generic wrappers such as `check` that
+    // invoke the same inventory script. Fall back to command inspection so a
+    // project whose only entry point is `verify: node scripts/notices.mjs` is
+    // still protected.
+    const relevant =
+      explicitlyNamed.length > 0
+        ? explicitlyNamed
+        : entries.filter(([, command]) => DEPENDENCY_LEGAL_INVENTORY_SEGMENT.test(command));
+    for (const [name] of relevant) {
+      matches.push(`\`${name}\` (${label})`);
+    }
+  }
+
+  if (matches.length === 0) {
+    return;
+  }
+  addManualStep(
+    report,
+    `Re-run project-owned dependency license/notice/attribution inventory scripts after installation and review any generated legal content: ${matches.join(', ')}`,
+  );
 }
 
 export function rewritePackageJson(

@@ -277,4 +277,5 @@ Migration converts legacy Node.js version-manager files to `.node-version`, the 
 
 - Each Vite config is inspected for Rolldown-incompatible patterns (such as `manualChunks`). Anything found is reported as a warning; the config is not changed.
 - Dependencies are reinstalled once to refresh the lockfile. If installation fails, migration reports the error and exits with a nonzero status.
+- If a package defines a script whose name or command explicitly references a license, notice, or attribution inventory, migration adds a manual follow-up to rerun it after dependency installation and review the result. Vite+ does not generate or approve legal content.
 - After a successful migration, `vp fmt` runs on the files changed during migration, excluding paths that were already dirty in the Git worktree. Oxfmt selects the supported formats; non-Git projects retain full-project formatting. Formatting is skipped while the project still uses Prettier. A formatter failure is reported as a warning so the migration result and the manual formatting command remain available.
