@@ -625,10 +625,16 @@ function showMigrationSummary(options: {
       log(`  - ${warning}`);
     }
   }
-  if (report.manualSteps.length > 0) {
+  if (report.manualSteps.length > 0 || report.retainedBuiltinScriptNames.length > 0) {
     log(`${styleText('blue', '→')} Manual follow-up:`);
     for (const step of report.manualSteps) {
       log(`  - ${step}`);
+    }
+    if (report.retainedBuiltinScriptNames.length > 0) {
+      const names = report.retainedBuiltinScriptNames.toSorted().map((name) => `\`${name}\``);
+      log(
+        `  - Retained package scripts ${names.join(', ')} collide with Vite+ built-ins. Run them with \`vp run <name>\` or \`vpr <name>\`; \`vp <name>\` runs the built-in instead.`,
+      );
     }
   }
 }

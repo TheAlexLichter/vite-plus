@@ -32,6 +32,7 @@ vi.mock('../../utils/constants.js', async (importOriginal) => {
 
 const {
   rewritePackageJson,
+  recordRetainedBuiltinScriptNames,
   rewriteStandaloneProject,
   rewriteMonorepo,
   rewriteMonorepoProject,
@@ -169,6 +170,37 @@ describe('Yarn PnP migration preflight', () => {
 });
 
 describe('rewritePackageJson', () => {
+  it('reports retained scripts that collide with Vite+ built-ins', () => {
+    const report = createMigrationReport();
+
+    recordRetainedBuiltinScriptNames(
+      {
+        dev: 'node scripts/dev.mjs',
+        build: 'tsc -b && vp build',
+        test: 'node scripts/test.mjs unit',
+        lint: 'vp lint --type-aware',
+        format: 'vp fmt',
+        preview: 'vp preview --host 0.0.0.0',
+        unrelated: 'node scripts/unrelated.mjs',
+      },
+      report,
+    );
+
+    expect(report.retainedBuiltinScriptNames).toEqual(['build', 'dev', 'test']);
+  });
+
+  it('deduplicates retained built-in script names across workspace packages', () => {
+    const report = createMigrationReport();
+
+    recordRetainedBuiltinScriptNames({ build: 'node scripts/build.mjs' }, report);
+    recordRetainedBuiltinScriptNames(
+      { build: 'rollup -c', check: 'node scripts/check.mjs' },
+      report,
+    );
+
+    expect(report.retainedBuiltinScriptNames).toEqual(['build', 'check']);
+  });
+
   it('should rewrite package.json scripts and extract staged config', async () => {
     const pkg = {
       scripts: {
@@ -4789,6 +4821,37 @@ describe('rewriteStandaloneProject pnpm workspace yaml', () => {
         process.env[key] = savedEnv[key];
       }
     }
+  });
+
+  it('reports only same-named custom scripts retained by a fresh migration', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'package.json'),
+      JSON.stringify({
+        name: 'custom-wrappers',
+        scripts: {
+          dev: 'vite --port 3000',
+          build: 'node scripts/build.mjs',
+          test: 'node scripts/test.mjs unit',
+          deploy: 'node scripts/deploy.mjs',
+        },
+        devDependencies: { vite: '^8.0.0', vitest: '^4.1.0' },
+      }),
+    );
+    const report = createMigrationReport();
+
+    rewriteStandaloneProject(
+      tmpDir,
+      makeWorkspaceInfo(tmpDir, PackageManager.pnpm),
+      true,
+      true,
+      report,
+    );
+
+    const pkg = readJson(path.join(tmpDir, 'package.json')) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts.dev).toBe('vp dev --port 3000');
+    expect(report.retainedBuiltinScriptNames).toEqual(['build', 'test']);
   });
 
   it('creates pnpm-workspace.yaml when no existing pnpm config in package.json', () => {
