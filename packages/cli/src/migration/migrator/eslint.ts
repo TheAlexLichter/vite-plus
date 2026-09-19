@@ -44,6 +44,71 @@ const OXLINT_NATIVE_PLUGINS = new Set<string>([
   'vue',
 ]);
 
+// Oxlint 1.79 replaced the experimental aggregate `react/react-compiler`
+// rule with the category-specific rules from eslint-plugin-react-hooks. A
+// project upgrading from an older standalone Oxlint can therefore have a
+// valid config that the Oxlint bundled by Vite+ no longer accepts. Enabling
+// every surviving category preserves the aggregate rule's behavior as
+// closely as the new API permits.
+//
+// Keep this list pinned to the bundled Oxlint schema. The compatibility tests
+// intentionally fail when Oxlint adds or removes a category so the migration
+// can be reviewed alongside a toolchain upgrade.
+const REACT_COMPILER_CATEGORY_RULES = [
+  'react/capitalized-calls',
+  'react/error-boundaries',
+  'react/exhaustive-effect-dependencies',
+  'react/globals',
+  'react/hooks',
+  'react/immutability',
+  'react/incompatible-library',
+  'react/invariant',
+  'react/memo-dependencies',
+  'react/no-deriving-state-in-effects',
+  'react/preserve-manual-memoization',
+  'react/purity',
+  'react/refs',
+  'react/rule-suppression',
+  'react/set-state-in-effect',
+  'react/set-state-in-render',
+  'react/static-components',
+  'react/syntax',
+  'react/todo',
+  'react/unsupported-syntax',
+  'react/use-memo',
+  'react/void-use-memo',
+] as const;
+
+let bundledOxlintRuleNames: Set<string> | undefined;
+
+/** Read the exact native rule registry shipped with Vite+'s Oxlint. */
+function getBundledOxlintRuleNames(): Set<string> | undefined {
+  if (bundledOxlintRuleNames) {
+    return bundledOxlintRuleNames;
+  }
+  try {
+    const schema = JSON.parse(
+      fs.readFileSync(
+        new URL('configuration_schema.json', import.meta.resolve('oxlint/package.json')),
+        'utf8',
+      ),
+    ) as {
+      definitions?: {
+        DummyRuleMap?: { properties?: Record<string, unknown> };
+      };
+    };
+    const properties = schema.definitions?.DummyRuleMap?.properties;
+    if (properties) {
+      bundledOxlintRuleNames = new Set(Object.keys(properties));
+    }
+  } catch {
+    // The schema is distributed with Oxlint, but retaining the old
+    // namespace-only behavior is safer than deleting rules if a future
+    // package layout makes it unavailable.
+  }
+  return bundledOxlintRuleNames;
+}
+
 export function detectEslintProject(
   projectPath: string,
   packages?: WorkspacePackage[],
@@ -561,18 +626,73 @@ function ruleKeyMatchesNamespace(key: string, namespaces: Set<string>): boolean 
   return false;
 }
 
-/** Filter a rules object to only entries whose namespace is recognized. */
+interface FilteredRules {
+  rules: Record<string, unknown>;
+  dropped: string[];
+}
+
+/**
+ * Filter a rules object to entries the bundled Oxlint can actually register.
+ *
+ * Rules contributed by surviving JS plugins cannot appear in Oxlint's native
+ * schema, so their namespaces remain the authority. Every other rule must be
+ * present in the native registry. If the schema cannot be read, fall back to
+ * the previous namespace-only check rather than risk deleting valid rules.
+ */
 function filterRulesAgainstNamespaces(
   rules: Record<string, unknown>,
   namespaces: Set<string>,
-): Record<string, unknown> {
+  jsPluginNamespaces: Set<string>,
+): FilteredRules {
   const out: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  const nativeRuleNames = getBundledOxlintRuleNames();
   for (const [key, value] of Object.entries(rules)) {
-    if (ruleKeyMatchesNamespace(key, namespaces)) {
+    const belongsToJsPlugin = key.includes('/') && ruleKeyMatchesNamespace(key, jsPluginNamespaces);
+    const isSupported = nativeRuleNames
+      ? nativeRuleNames.has(key) || belongsToJsPlugin
+      : ruleKeyMatchesNamespace(key, namespaces);
+    if (isSupported) {
       out[key] = value;
+    } else {
+      dropped.push(key);
     }
   }
-  return out;
+  return { rules: out, dropped };
+}
+
+interface ReactCompilerRuleMigration {
+  migrated: boolean;
+  droppedOptions: boolean;
+}
+
+/** Expand Oxlint's removed aggregate React Compiler rule in-place. */
+function migrateRemovedReactCompilerRule(
+  rules: Record<string, unknown> | undefined,
+): ReactCompilerRuleMigration {
+  const legacyValue = rules?.['react/react-compiler'];
+  if (!rules || legacyValue === undefined) {
+    return { migrated: false, droppedOptions: false };
+  }
+
+  delete rules['react/react-compiler'];
+  const severity = Array.isArray(legacyValue) ? legacyValue[0] : legacyValue;
+  if (severity !== undefined) {
+    for (const ruleName of REACT_COMPILER_CATEGORY_RULES) {
+      // An explicit category setting is more specific than the legacy
+      // aggregate and must win regardless of object insertion order.
+      if (!(ruleName in rules)) {
+        rules[ruleName] = severity;
+      }
+    }
+  }
+
+  return {
+    migrated: true,
+    // The aggregate rule accepted `reportAllBailouts` and React Compiler
+    // environment options. The replacement rules in bundled Oxlint do not.
+    droppedOptions: Array.isArray(legacyValue) && legacyValue.length > 1,
+  };
 }
 
 /**
@@ -657,10 +777,12 @@ function stripUnsupportedReactRefreshOption(rules: OxlintConfig['rules']): boole
  * Why: `@oxlint/migrate` can emit `jsPlugins[]` / `plugins[]` / `rules`
  * entries referring to packages the user never installed (e.g.
  * translating `@unocss/eslint-config` into `eslint-plugin-unocss`),
- * to plugins outside Oxlint's native set, or under namespaces no
- * surviving plugin contributes. Without sanitization, `vp lint` aborts
- * with "Failed to load JS plugin" / "Plugin not found" before running
- * any rule. This produces a degraded-but-functional config instead.
+ * to plugins outside Oxlint's native set, under namespaces no surviving
+ * plugin contributes, or to native rules removed by a bundled Oxlint
+ * upgrade. Without sanitization, `vp lint` aborts with "Failed to load JS
+ * plugin" / "Plugin not found" / "Rule not found" before running any rule.
+ * This produces a degraded-but-functional config instead, with known
+ * compatibility migrations applied before unsupported rules are dropped.
  *
  * Per-override entries (`overrides[].jsPlugins`, `.plugins`, `.rules`)
  * are sanitized independently — an override can introduce its own
@@ -675,7 +797,14 @@ export function sanitizeMigratedOxlintConfig(
   // Track everything we strip so we can warn the user.
   const allDroppedJsPlugins = new Set<string>();
   const allDroppedPlugins = new Set<string>();
+  const allDroppedRules = new Set<string>();
+  let migratedReactCompilerRule = false;
+  let droppedReactCompilerOptions = false;
   let droppedReactRefreshOption = stripUnsupportedReactRefreshOption(config.rules);
+
+  const baseReactCompilerMigration = migrateRemovedReactCompilerRule(config.rules);
+  migratedReactCompilerRule ||= baseReactCompilerMigration.migrated;
+  droppedReactCompilerOptions ||= baseReactCompilerMigration.droppedOptions;
 
   // 1. Sanitize base-level jsPlugins.
   const baseSplit = partitionJsPlugins(config.jsPlugins ?? [], availablePackages);
@@ -688,7 +817,8 @@ export function sanitizeMigratedOxlintConfig(
 
   // 2. Base namespaces = native plugins + surviving jsPlugins' namespaces.
   const baseNamespaces = new Set<string>(OXLINT_NATIVE_PLUGINS);
-  for (const ns of jsPluginsToNamespaces(baseSplit.kept)) {
+  const baseJsPluginNamespaces = jsPluginsToNamespaces(baseSplit.kept);
+  for (const ns of baseJsPluginNamespaces) {
     baseNamespaces.add(ns);
   }
 
@@ -712,9 +842,16 @@ export function sanitizeMigratedOxlintConfig(
   // `rules: undefined` property that would shift downstream key
   // emission in the merged vite.config.ts.
   if (config.rules) {
-    const filtered = filterRulesAgainstNamespaces(config.rules, baseNamespaces);
-    if (Object.keys(filtered).length !== Object.keys(config.rules).length) {
-      config.rules = filtered as typeof config.rules;
+    const filtered = filterRulesAgainstNamespaces(
+      config.rules,
+      baseNamespaces,
+      baseJsPluginNamespaces,
+    );
+    for (const ruleName of filtered.dropped) {
+      allDroppedRules.add(ruleName);
+    }
+    if (filtered.dropped.length > 0) {
+      config.rules = filtered.rules as typeof config.rules;
     }
   }
 
@@ -730,6 +867,9 @@ export function sanitizeMigratedOxlintConfig(
       if (stripUnsupportedReactRefreshOption(override.rules)) {
         droppedReactRefreshOption = true;
       }
+      const overrideReactCompilerMigration = migrateRemovedReactCompilerRule(override.rules);
+      migratedReactCompilerRule ||= overrideReactCompilerMigration.migrated;
+      droppedReactCompilerOptions ||= overrideReactCompilerMigration.droppedOptions;
       // Override jsPlugins.
       let overrideSurvivors: NonNullable<OxlintConfig['jsPlugins']> = [];
       if (override.jsPlugins) {
@@ -743,8 +883,10 @@ export function sanitizeMigratedOxlintConfig(
         overrideSurvivors = split.kept;
       }
       const overrideNamespaces = new Set<string>(baseNamespaces);
+      const overrideJsPluginNamespaces = new Set<string>(baseJsPluginNamespaces);
       for (const ns of jsPluginsToNamespaces(overrideSurvivors)) {
         overrideNamespaces.add(ns);
+        overrideJsPluginNamespaces.add(ns);
       }
 
       // Override plugins[].
@@ -765,9 +907,16 @@ export function sanitizeMigratedOxlintConfig(
 
       // Override rules.
       if (override.rules) {
-        const filtered = filterRulesAgainstNamespaces(override.rules, overrideNamespaces);
-        if (Object.keys(filtered).length !== Object.keys(override.rules).length) {
-          override.rules = filtered as typeof override.rules;
+        const filtered = filterRulesAgainstNamespaces(
+          override.rules,
+          overrideNamespaces,
+          overrideJsPluginNamespaces,
+        );
+        for (const ruleName of filtered.dropped) {
+          allDroppedRules.add(ruleName);
+        }
+        if (filtered.dropped.length > 0) {
+          override.rules = filtered.rules as typeof override.rules;
         }
       }
     }
@@ -778,6 +927,20 @@ export function sanitizeMigratedOxlintConfig(
     warnMigration(
       'The bundled Oxlint does not support react/only-export-components.allowCompoundComponents. ' +
         'Removed this option from the migrated config; compound component exports may now report lint errors.',
+      report,
+    );
+  }
+  if (migratedReactCompilerRule) {
+    warnMigration(
+      'Oxlint replaced react/react-compiler with category-specific rules. ' +
+        `Enabled its ${REACT_COMPILER_CATEGORY_RULES.length} supported replacements in the migrated config.`,
+      report,
+    );
+  }
+  if (droppedReactCompilerOptions) {
+    warnMigration(
+      'The category-specific React Compiler rules do not support the options from react/react-compiler. ' +
+        'Preserved its severity but removed those options; review the migrated React Compiler rules.',
       report,
     );
   }
@@ -802,6 +965,13 @@ export function sanitizeMigratedOxlintConfig(
     warnMigration(
       `Stripped unknown plugin reference(s) from the generated lint config: ${[...allDroppedPlugins].join(', ')}. ` +
         "These aren't native Oxlint plugins and no surviving JS plugin contributes them.",
+      report,
+    );
+  }
+  if (allDroppedRules.size > 0) {
+    warnMigration(
+      `Stripped rule reference(s) unsupported by the bundled Oxlint: ${[...allDroppedRules].join(', ')}. ` +
+        'Review the Oxlint release notes and replace them with supported rules in `lint.rules`.',
       report,
     );
   }

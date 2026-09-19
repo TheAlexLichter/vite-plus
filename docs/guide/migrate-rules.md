@@ -162,6 +162,14 @@ The migration also skips a package that declares `oxlint` or `@oxlint/plugins` i
 
 The cleanup retains a development dependency on `@oxlint/plugins` when source, package import aliases, or built plugins still reference it. This includes ignored output in directories such as `dist`, `build`, and `out`.
 
+### Oxlint Rule Compatibility
+
+Migration validates native rule names against the Oxlint version bundled by Vite+. Rules contributed by a surviving `lint.jsPlugins` entry are validated by that plugin at lint time instead.
+
+When Oxlint provides an unambiguous replacement, migration applies it. In particular, Oxlint 1.79 removed the aggregate `react/react-compiler` rule in favor of category-specific React Compiler rules. Migration expands the old rule into every replacement supported by the bundled Oxlint, keeps its severity, and preserves any explicit category setting. The replacements do not accept the aggregate rule's former options, so migration removes those options and warns for review.
+
+Other unknown native rules are removed with a warning naming each rule. This keeps `vp lint` runnable while making lost coverage explicit instead of leaving a config that fails to load.
+
 ### What Is Never Rewritten
 
 - `declare module 'vitest'` and `declare module '@vitest/browser*'`: module augmentation must retain the upstream module identity.
