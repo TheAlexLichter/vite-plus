@@ -281,6 +281,7 @@ export function isPlainRecord(value: unknown): value is Record<string, unknown> 
 }
 
 export type DependencyBag = {
+  scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
