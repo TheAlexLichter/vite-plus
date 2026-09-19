@@ -23,6 +23,12 @@ On a project that already depends on `vite-plus`, `vp migrate` performs an upgra
 
 When a default upgrade skips setup actions that would apply, it prints a hint to run `vp migrate --full`. Fresh (non Vite+) projects always run the full migration.
 
+## Package Scripts and Built-in Commands
+
+Migration rewrites direct Vite, Vitest, Oxlint, Oxfmt, and tsdown invocations in `package.json` scripts to their Vite+ equivalents. It preserves custom wrappers and composed commands instead of guessing whether their extra setup, validation, or cleanup can be removed.
+
+Some package-script names also name Vite+ built-ins: `dev`, `build`, `preview`, `test`, `lint`, `fmt`/`format`, `check`, `pack`, and `staged`. When a retained script with one of these names is not a direct invocation of the corresponding built-in, the migration summary lists the collision. Run that script with `vp run <name>` or the `vpr <name>` shorthand. A direct `vp <name>` call runs the Vite+ built-in and skips the custom script.
+
 ## Pack Configuration
 
 `vp migrate` updates static `pack` objects in `vite.config.*` and exported objects in `tsdown.config.*` for [tsdown 0.23](https://github.com/rolldown/tsdown/releases/tag/v0.23.0). This also runs on existing Vite+ projects without `--full`, including workspace packages. Arrays and direct objects returned by `defineConfig` callbacks are supported. JSON tsdown configs receive the same updates after they merge into `vite.config.ts`.

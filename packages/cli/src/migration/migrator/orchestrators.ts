@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { PackageManager, type WorkspaceInfo, type WorkspacePackage } from '../../types/index.ts';
 import { VITE_PLUS_NAME, VITE_PLUS_VERSION, isForceOverrideMode } from '../../utils/constants.ts';
-import { editJsonFile } from '../../utils/json.ts';
+import { editJsonFile, readJsonFile } from '../../utils/json.ts';
 import {
   applyBuildAllowanceToPackageJsonPnpm,
   applyYarnWorkspaceHoistingFix,
@@ -37,6 +37,7 @@ import {
   removeLintStagedFromPackageJson,
   removeManagedVitestEntry,
   removeVitestPeerDependencyRule,
+  recordRetainedBuiltinScriptNames,
   rewriteAllImports,
   rewriteBunCatalog,
   rewriteLintStagedConfigFile,
@@ -256,6 +257,7 @@ export function rewriteStandaloneProject(
       requiredVitestPeer,
       providerCatalogAdditions,
     );
+    recordRetainedBuiltinScriptNames(pkg.scripts, report);
 
     // ensure vite-plus is in devDependencies — but only when it isn't already a
     // direct dependency/devDependency, so a project that declares vite-plus in
@@ -428,6 +430,14 @@ export function rewriteMonorepo(
     workspaceUsesVitest,
     supportCatalog,
   );
+  recordRetainedBuiltinScriptNames(
+    (
+      readJsonFile(path.join(workspaceInfo.rootDir, 'package.json')) as {
+        scripts?: Record<string, string>;
+      }
+    ).scripts,
+    report,
+  );
   if (workspaceInfo.packageManager === PackageManager.pnpm) {
     rewritePnpmWorkspaceYaml(
       workspaceInfo.rootDir,
@@ -585,6 +595,7 @@ export function rewriteMonorepoProject(
       requiredVitestPeer,
       providerCatalogAdditions,
     );
+    recordRetainedBuiltinScriptNames(pkg.scripts, report);
     // If this SUB-workspace now depends on `vite-plus` and Yarn isolates its
     // hoisting (via the root `nmHoistingLimits` OR the workspace's own
     // `installConfig.hoistingLimits`), dedupe the bundled `vitest` family to the

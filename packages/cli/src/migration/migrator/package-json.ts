@@ -21,6 +21,7 @@ import {
   removeManagedVitestEntry,
   setDirectViteEdge,
 } from '../migrator.ts';
+import { type MigrationReport } from '../report.ts';
 import {
   BROWSER_PROVIDER_PEER_DEPS,
   hasProviderPeerDependency,
@@ -35,6 +36,59 @@ import {
   type CatalogDependencyResolver,
   type PackageJsonDependencyField,
 } from './shared.ts';
+
+// These package-script names are also Vite+ built-ins (including `format`,
+// which is a visible alias for `fmt`). A retained script with one of these
+// names is still available through `vp run`, but `vp <name>` does not run it.
+const BUILTIN_SCRIPT_COMMANDS: Readonly<Record<string, readonly string[]>> = {
+  build: ['build'],
+  check: ['check'],
+  dev: ['dev'],
+  fmt: ['fmt', 'format'],
+  format: ['fmt', 'format'],
+  lint: ['lint'],
+  pack: ['pack'],
+  preview: ['preview'],
+  staged: ['staged'],
+  test: ['test'],
+};
+
+function isDirectBuiltinInvocation(script: string, commands: readonly string[]): boolean {
+  const normalized = script.trim();
+  return commands.some((command) => {
+    const invocation = `vp ${command}`;
+    if (normalized === invocation) {
+      return true;
+    }
+    if (!normalized.startsWith(`${invocation} `)) {
+      return false;
+    }
+
+    // A script that composes the built-in with another shell command retains
+    // behavior that a direct `vp <name>` call would skip. This deliberately
+    // treats shell substitutions as custom behavior too.
+    return !/[\n;&|<>`]|\$\(/.test(normalized.slice(invocation.length));
+  });
+}
+
+export function recordRetainedBuiltinScriptNames(
+  scripts: Record<string, string> | undefined,
+  report: MigrationReport | undefined,
+): void {
+  if (!scripts || !report) {
+    return;
+  }
+
+  for (const [name, commands] of Object.entries(BUILTIN_SCRIPT_COMMANDS)) {
+    const script = scripts[name];
+    if (script === undefined || isDirectBuiltinInvocation(script, commands)) {
+      continue;
+    }
+    if (!report.retainedBuiltinScriptNames.includes(name)) {
+      report.retainedBuiltinScriptNames.push(name);
+    }
+  }
+}
 
 export function rewritePackageJson(
   pkg: {

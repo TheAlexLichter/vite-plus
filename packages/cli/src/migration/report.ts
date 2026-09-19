@@ -30,6 +30,7 @@ export interface MigrationReport {
   frameworkShimAdded: boolean;
   packageManagerBootstrapConfigured: boolean;
   dependencyUpgrades: DependencyVersionChange[];
+  retainedBuiltinScriptNames: string[];
   warnings: string[];
   manualSteps: string[];
 }
@@ -55,6 +56,7 @@ export function createMigrationReport(): MigrationReport {
     frameworkShimAdded: false,
     packageManagerBootstrapConfigured: false,
     dependencyUpgrades: [],
+    retainedBuiltinScriptNames: [],
     warnings: [],
     manualSteps: [],
   };
