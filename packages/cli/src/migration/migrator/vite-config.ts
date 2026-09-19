@@ -25,6 +25,7 @@ import { hasBaseUrlInTsconfig } from '../../utils/tsconfig.ts';
 import { detectConfigs, type ConfigFiles } from '../detector.ts';
 import {
   collectInstalledPackageNames,
+  findRawToolConfigConsumers,
   readRulesYaml,
   sanitizeMigratedOxlintConfig,
 } from '../migrator.ts';
@@ -254,6 +255,7 @@ export function mergeViteConfigFiles(
   if (!configs.oxfmtConfig && !configs.oxlintConfig) {
     return;
   }
+  const rawToolConsumers = findRawToolConfigConsumers(projectPath);
   const viteConfig = ensureViteConfig(projectPath, configs, silent, report);
   if (configs.oxlintConfig) {
     // Inject options.typeAware and options.typeCheck defaults before merging
@@ -291,12 +293,53 @@ export function mergeViteConfigFiles(
     // trailing newline) instead of forcing 2-space + no EOL.
     writeJsonFile(fullOxlintPath, normalizedOxlintConfig as Record<string, unknown>);
     // merge oxlint config into vite.config.ts
-    mergeAndRemoveJsonConfig(projectPath, viteConfig, configs.oxlintConfig, 'lint', silent, report);
+    const preserveStandaloneConfig = rawToolConsumers.oxlint.length > 0;
+    mergeAndRemoveJsonConfig(
+      projectPath,
+      viteConfig,
+      configs.oxlintConfig,
+      'lint',
+      silent,
+      report,
+      preserveStandaloneConfig,
+    );
+    if (preserveStandaloneConfig) {
+      reportPreservedRawToolConfig('Oxlint', configs.oxlintConfig, rawToolConsumers.oxlint, report);
+    }
   }
   if (configs.oxfmtConfig) {
     // merge oxfmt config into vite.config.ts
-    mergeAndRemoveJsonConfig(projectPath, viteConfig, configs.oxfmtConfig, 'fmt', silent, report);
+    const preserveStandaloneConfig = rawToolConsumers.oxfmt.length > 0;
+    mergeAndRemoveJsonConfig(
+      projectPath,
+      viteConfig,
+      configs.oxfmtConfig,
+      'fmt',
+      silent,
+      report,
+      preserveStandaloneConfig,
+    );
+    if (preserveStandaloneConfig) {
+      reportPreservedRawToolConfig('Oxfmt', configs.oxfmtConfig, rawToolConsumers.oxfmt, report);
+    }
   }
+}
+
+function reportPreservedRawToolConfig(
+  toolName: 'Oxlint' | 'Oxfmt',
+  configPath: string,
+  consumerPaths: string[],
+  report?: MigrationReport,
+): void {
+  const consumers = consumerPaths.join(', ');
+  warnMigration(
+    `Preserved ${configPath} because raw ${toolName} execution was detected in ${consumers}; raw ${toolName} does not read configuration from vite.config.ts`,
+    report,
+  );
+  infoMigration(
+    `Review raw ${toolName} execution in ${consumers}: keep ${configPath} synchronized with vite.config.ts or migrate the wrapper to Vite+`,
+    report,
+  );
 }
 
 /**
@@ -404,6 +447,7 @@ function mergeAndRemoveJsonConfig(
   configKey: string,
   silent = false,
   report?: MigrationReport,
+  preserveOriginal = false,
 ): void {
   const fullViteConfigPath = path.join(projectPath, viteConfigPath);
   const fullJsonConfigPath = path.join(projectPath, jsonConfigPath);
@@ -414,10 +458,12 @@ function mergeAndRemoveJsonConfig(
   // AST-based check ignores comments, string-literal occurrences, and nested
   // keys (e.g. `plugins: [{ fmt: ... }]`).
   if (hasConfigKey(fullViteConfigPath, configKey)) {
-    fs.unlinkSync(fullJsonConfigPath);
+    if (!preserveOriginal) {
+      fs.unlinkSync(fullJsonConfigPath);
+    }
     if (!silent) {
       prompts.log.info(
-        `${configKey} config already present in ${displayRelative(fullViteConfigPath)} — removed redundant ${displayRelative(fullJsonConfigPath)}`,
+        `${configKey} config already present in ${displayRelative(fullViteConfigPath)} — ${preserveOriginal ? 'kept standalone config for raw tool consumers' : `removed redundant ${displayRelative(fullJsonConfigPath)}`}`,
       );
     }
     return;
@@ -425,13 +471,15 @@ function mergeAndRemoveJsonConfig(
   const result = mergeJsonConfig(fullViteConfigPath, fullJsonConfigPath, configKey);
   if (result.updated) {
     fs.writeFileSync(fullViteConfigPath, result.content);
-    fs.unlinkSync(fullJsonConfigPath);
+    if (!preserveOriginal) {
+      fs.unlinkSync(fullJsonConfigPath);
+    }
     if (report) {
       report.mergedConfigCount++;
     }
     if (!silent) {
       prompts.log.success(
-        `✔ Merged ${displayRelative(fullJsonConfigPath)} into ${displayRelative(fullViteConfigPath)}`,
+        `✔ Merged ${displayRelative(fullJsonConfigPath)} into ${displayRelative(fullViteConfigPath)}${preserveOriginal ? ' and kept the standalone config for raw tool consumers' : ''}`,
       );
     }
   } else {

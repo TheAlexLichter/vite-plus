@@ -195,6 +195,148 @@ const VITEST_SCAN_SKIP_DIRS = new Set([
 // dependencies and version-control metadata are irrelevant to retention.
 const OXLINT_RETENTION_SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn']);
 
+const RAW_TOOL_RUNNER_NAMES = new Set([
+  'spawn',
+  'spawnSync',
+  'exec',
+  'execSync',
+  'execFile',
+  'execFileSync',
+  'execa',
+  'execaSync',
+  'execaCommand',
+  'execaCommandSync',
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function collectRawToolRunnerNames(content: string): Set<string> {
+  const names = new Set(RAW_TOOL_RUNNER_NAMES);
+  const namedImportOrRequire =
+    /(?:import\s*\{([^}]*)\}\s*from\s*|(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\s*\(\s*)['"](?:node:)?(?:child_process|execa|shelljs|cross-spawn|tinyexec)['"]/g;
+  for (const match of content.matchAll(namedImportOrRequire)) {
+    const bindings = match[1] ?? match[2] ?? '';
+    for (const binding of bindings.split(',')) {
+      const [imported, local] = binding.trim().split(/\s+(?:as|:)\s+/);
+      if (imported && RAW_TOOL_RUNNER_NAMES.has(imported)) {
+        names.add(local || imported);
+      }
+    }
+  }
+  const defaultRunnerImport =
+    /import\s+([A-Za-z_$][\w$]*)\s+from\s+['"](?:execa|cross-spawn|tinyexec)['"]/g;
+  for (const match of content.matchAll(defaultRunnerImport)) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+function findCallEnd(content: string, openParenIndex: number): number {
+  let depth = 0;
+  let quote: "'" | '"' | '`' | undefined;
+  let escaped = false;
+  for (let index = openParenIndex; index < content.length; index++) {
+    const char = content[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+    } else if (char === '(') {
+      depth++;
+    } else if (char === ')' && --depth === 0) {
+      return index + 1;
+    }
+  }
+  return content.length;
+}
+
+function sourceInvokesRawTool(content: string, tool: 'oxlint' | 'oxfmt'): boolean {
+  // Match the tool as a token in a static string. This covers both direct
+  // calls (`execa('oxlint')`) and package-executor argument arrays
+  // (`spawnSync('npx', ['--no-install', 'oxlint'])`) without attempting to
+  // interpret arbitrary JavaScript.
+  const staticToolToken = new RegExp(
+    `(?:['"\\x60])[^'"\\x60\\r\\n]*\\b${tool}\\b[^'"\\x60\\r\\n]*(?:['"\\x60])`,
+  );
+  const runnerNames = [...collectRawToolRunnerNames(content)].map(escapeRegExp).join('|');
+  const runnerCall = new RegExp(
+    `(?:\\b(?:${runnerNames})|\\b[A-Za-z_$][\\w$]*\\.(?:${runnerNames})|\\bBun\\.spawn(?:Sync)?|new\\s+Deno\\.Command)\\s*\\(`,
+    'g',
+  );
+  for (const match of content.matchAll(runnerCall)) {
+    const openParenIndex = match.index + match[0].lastIndexOf('(');
+    const call = content.slice(match.index, findCallEnd(content, openParenIndex));
+    if (staticToolToken.test(call)) {
+      return true;
+    }
+  }
+  // zx's `$` is a tagged template rather than a function call.
+  return new RegExp(`\\$\\s*\\x60[^\\x60\\r\\n]*\\b${tool}\\b[^\\x60\\r\\n]*\\x60`).test(content);
+}
+
+/**
+ * Find project-owned JS/TS wrappers that execute Oxlint or Oxfmt directly.
+ *
+ * This is intentionally a conservative static scan. It recognizes common
+ * process-launching APIs plus a static tool-name string, stops at nested
+ * package boundaries, and does not try to rewrite arbitrary program logic.
+ */
+export function findRawToolConfigConsumers(
+  projectPath: string,
+): Record<'oxlint' | 'oxfmt', string[]> {
+  const consumers: Record<'oxlint' | 'oxfmt', string[]> = { oxlint: [], oxfmt: [] };
+
+  function scanDir(dir: string, isRoot: boolean): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (!isRoot && entries.some((entry) => entry.isFile() && entry.name === 'package.json')) {
+      return;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!VITEST_SCAN_SKIP_DIRS.has(entry.name)) {
+          scanDir(entryPath, false);
+        }
+        continue;
+      }
+      if (!entry.isFile() || !VITEST_SCAN_EXTENSIONS.has(path.extname(entry.name))) {
+        continue;
+      }
+      try {
+        const content = fs.readFileSync(entryPath, 'utf8');
+        const relativePath = path.relative(projectPath, entryPath).split(path.sep).join('/');
+        for (const tool of ['oxlint', 'oxfmt'] as const) {
+          if (sourceInvokesRawTool(content, tool)) {
+            consumers[tool].push(relativePath);
+          }
+        }
+      } catch {
+        // Unreadable source — ignore and keep scanning.
+      }
+    }
+  }
+
+  scanDir(projectPath, true);
+  consumers.oxlint.sort();
+  consumers.oxfmt.sort();
+  return consumers;
+}
+
 /**
  * Detect whether a package uses vitest's browser mode.
  *

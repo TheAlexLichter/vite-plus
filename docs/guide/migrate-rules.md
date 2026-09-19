@@ -197,6 +197,14 @@ For commands launched through `bunx`, migration preserves `bunx` and its `--bun`
 
 Unrelated `bunx` commands and other package-executor forms remain unchanged.
 
+Project-owned JavaScript and TypeScript wrappers are not rewritten. When the
+migrator detects a common process-launching API executing `oxlint` or `oxfmt`
+directly, it keeps the corresponding `.oxlintrc.json[c]` or `.oxfmtrc.json[c]`
+after also merging it into `vite.config.ts`. Raw tool binaries do not read the
+configuration embedded in `vite.config.ts`, so the migration reports the
+wrapper as a manual follow-up: either keep both configurations synchronized or
+adapt the wrapper to invoke Vite+.
+
 ## Continuous Integration Rules
 
 Migration replaces exact `voidzero-dev/setup-vp@v1` references in GitHub Actions workflows and composite actions under `.github` with the latest exact `setup-vp` release known to that Vite+ version. The frozen `v1` tag does not receive new releases. Existing exact versions and commit SHAs are left unchanged.

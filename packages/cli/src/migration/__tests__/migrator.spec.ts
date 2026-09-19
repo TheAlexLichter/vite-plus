@@ -52,6 +52,7 @@ const {
   injectFmtDefaults,
   injectLintTypeCheckDefaults,
   ensureSvelteRuneGlobals,
+  findRawToolConfigConsumers,
   mergeViteConfigFiles,
   rewriteEslintPackageJson,
   collectInstalledPackageNames,
@@ -8932,6 +8933,107 @@ export default defineConfig({ entry: 'src/index.ts' });
   });
 });
 
+describe('raw Oxlint/Oxfmt config consumers', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-test-raw-tool-config-'));
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ name: 'test' }));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('detects process wrappers but ignores source that only mentions the tools', () => {
+    fs.mkdirSync(path.join(tmpDir, 'scripts'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'scripts/lint.mjs'),
+      `import { spawnSync as run } from 'node:child_process';
+run('npx', ['--no-install', 'oxlint', '--format=json']);
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'scripts/format.ts'),
+      `import { execa } from 'execa';
+await execa('oxfmt', ['--check']);
+`,
+    );
+    fs.writeFileSync(path.join(tmpDir, 'tools.ts'), `export const tools = ['oxlint', 'oxfmt'];\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, 'unrelated.mjs'),
+      `import { spawnSync } from 'node:child_process';
+spawnSync('git', ['status']);
+export const suggestedTool = 'oxlint';
+`,
+    );
+
+    expect(findRawToolConfigConsumers(tmpDir)).toEqual({
+      oxlint: ['scripts/lint.mjs'],
+      oxfmt: ['scripts/format.ts'],
+    });
+  });
+
+  it('does not inherit raw tool consumers from a nested package', () => {
+    fs.mkdirSync(path.join(tmpDir, 'packages/app'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'packages/app/package.json'), '{}');
+    fs.writeFileSync(
+      path.join(tmpDir, 'packages/app/check.mjs'),
+      `import { execFileSync } from 'node:child_process';
+execFileSync('oxlint');
+`,
+    );
+
+    expect(findRawToolConfigConsumers(tmpDir)).toEqual({ oxlint: [], oxfmt: [] });
+    expect(findRawToolConfigConsumers(path.join(tmpDir, 'packages/app'))).toEqual({
+      oxlint: ['check.mjs'],
+      oxfmt: [],
+    });
+  });
+
+  it('preserves standalone configs and reports follow-up for detected wrappers', () => {
+    fs.mkdirSync(path.join(tmpDir, 'scripts'));
+    fs.writeFileSync(
+      path.join(tmpDir, 'vite.config.ts'),
+      `import { defineConfig } from 'vite-plus';
+
+export default defineConfig({});
+`,
+    );
+    fs.writeFileSync(path.join(tmpDir, '.oxlintrc.json'), JSON.stringify({ rules: {} }));
+    fs.writeFileSync(path.join(tmpDir, '.oxfmtrc.json'), JSON.stringify({ semi: false }));
+    fs.writeFileSync(
+      path.join(tmpDir, 'scripts/lint.mjs'),
+      `import { spawnSync } from 'node:child_process';
+spawnSync('npx', ['--no-install', 'oxlint', '--format=json']);
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'scripts/format.mjs'),
+      `import { spawnSync } from 'node:child_process';
+spawnSync('npx', ['--no-install', 'oxfmt', '--check', '.']);
+`,
+    );
+    const report = createMigrationReport();
+
+    mergeViteConfigFiles(tmpDir, true, report);
+
+    expect(fs.existsSync(path.join(tmpDir, '.oxlintrc.json'))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, '.oxfmtrc.json'))).toBe(true);
+    const viteConfig = fs.readFileSync(path.join(tmpDir, 'vite.config.ts'), 'utf8');
+    expect(viteConfig).toMatch(/\blint\s*:/);
+    expect(viteConfig).toMatch(/\bfmt\s*:/);
+    expect(report.warnings).toEqual([
+      expect.stringContaining('scripts/lint.mjs'),
+      expect.stringContaining('scripts/format.mjs'),
+    ]);
+    expect(report.manualSteps).toEqual([
+      expect.stringContaining('keep .oxlintrc.json synchronized'),
+      expect.stringContaining('keep .oxfmtrc.json synchronized'),
+    ]);
+  });
+});
+
 // Regression: templates such as `create-fate` ship a populated vite.config.ts
 // alongside a standalone `.oxfmtrc.jsonc` / `.oxlintrc.json`. The merge step
 // must not insert a second `fmt:` / `lint:` block when one is already present.
@@ -8976,6 +9078,35 @@ export default defineConfig({
     expect(viteConfig).not.toContain('singleQuote: false');
     // Redundant standalone file removed.
     expect(fs.existsSync(path.join(tmpDir, '.oxfmtrc.jsonc'))).toBe(false);
+  });
+
+  it('keeps a standalone config needed by a raw wrapper when the Vite+ block already exists', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'vite.config.ts'),
+      `import { defineConfig } from 'vite-plus';
+
+export default defineConfig({ fmt: { singleQuote: true } });
+`,
+    );
+    fs.writeFileSync(path.join(tmpDir, '.oxfmtrc.jsonc'), JSON.stringify({ singleQuote: false }));
+    fs.writeFileSync(
+      path.join(tmpDir, 'format.mjs'),
+      `import { spawnSync } from 'node:child_process';
+spawnSync('oxfmt', ['--check', '.']);
+`,
+    );
+    const report = createMigrationReport();
+
+    rewriteStandaloneProject(
+      tmpDir,
+      makeWorkspaceInfo(tmpDir, PackageManager.pnpm),
+      true,
+      true,
+      report,
+    );
+
+    expect(fs.existsSync(path.join(tmpDir, '.oxfmtrc.jsonc'))).toBe(true);
+    expect(report.warnings).toEqual([expect.stringContaining('format.mjs')]);
   });
 });
 
