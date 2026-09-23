@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 
 import { type OxlintConfig } from 'oxlint';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { sanitizeMigratedOxlintConfig } from '../migrator.ts';
 import { createMigrationReport } from '../report.ts';
+
+vi.mock('../../../binding/index.js', () => ({ rewriteEslint: vi.fn() }));
+
+const { sanitizeMigratedOxlintConfig } = await import('../migrator/eslint.ts');
 
 const REACT_COMPILER_REPLACEMENTS = [
   'react/capitalized-calls',
