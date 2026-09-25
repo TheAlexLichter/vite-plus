@@ -1016,8 +1016,9 @@ async function main() {
   printHeader();
 
   if (!fs.existsSync(path.join(projectPath, 'package.json'))) {
+    const target = displayRelative(projectPath) || '.';
     cancelAndExit(
-      `Cannot migrate ${displayRelative(projectPath)}: no package.json found. Run vp migrate from a project root or pass its path explicitly.`,
+      `Cannot migrate ${target}: no package.json found. Run vp migrate from a project root or pass its path explicitly.`,
       1,
     );
   }
