@@ -601,8 +601,13 @@ function filterRulesAgainstNamespaces(
   namespaces: Set<string>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const typescriptAliasPrefix = '@typescript-eslint/';
   for (const [key, value] of Object.entries(rules)) {
-    if (ruleKeyMatchesNamespace(key, namespaces)) {
+    // Oxlint accepts `@typescript-eslint/*` as an alias for `typescript/*`.
+    const matchesTypescriptAlias =
+      key.startsWith(typescriptAliasPrefix) &&
+      ruleKeyMatchesNamespace(`typescript/${key.slice(typescriptAliasPrefix.length)}`, namespaces);
+    if (ruleKeyMatchesNamespace(key, namespaces) || matchesTypescriptAlias) {
       out[key] = value;
     }
   }
