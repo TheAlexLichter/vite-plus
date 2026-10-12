@@ -232,7 +232,6 @@ export async function migrateEslintToOxlint(
     const migratePackage = `@oxlint/migrate@${await resolveOxlintMigrateVersion(versions.oxlint)}`;
     const migrateArgs = [
       '--merge',
-      '--js-plugins',
       ...(!hasBaseUrlInTsconfig(projectPath) ? ['--type-aware'] : []),
       '--with-nursery',
       '--details',
