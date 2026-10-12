@@ -232,6 +232,7 @@ export async function migrateEslintToOxlint(
     const migratePackage = `@oxlint/migrate@${await resolveOxlintMigrateVersion(versions.oxlint)}`;
     const migrateArgs = [
       '--merge',
+      '--js-plugins',
       ...(!hasBaseUrlInTsconfig(projectPath) ? ['--type-aware'] : []),
       '--with-nursery',
       '--details',
@@ -312,12 +313,11 @@ export async function migrateEslintToOxlint(
 
 /**
  * Read `<projectPath>/.oxlintrc.json` (if any) and collect the package
- * names referenced via `lint.jsPlugins[]` string entries. Object-form
- * entries (`{ name, specifier }`) and local-path specifiers (`./X`,
- * `../X`, `/X`) are excluded — neither maps to a `package.json` entry
- * we'd accidentally strip.
+ * names referenced via `lint.jsPlugins[]` entries. Object-form entries
+ * use `specifier` as the package name; `name` is only the rule namespace.
+ * Local-path specifiers have no `package.json` entry to preserve.
  */
-function collectJsPluginPackageNames(projectPath: string): Set<string> {
+export function collectJsPluginPackageNames(projectPath: string): Set<string> {
   const out = new Set<string>();
   const oxlintConfigPath = path.join(projectPath, '.oxlintrc.json');
   if (!fs.existsSync(oxlintConfigPath)) {
@@ -331,13 +331,11 @@ function collectJsPluginPackageNames(projectPath: string): Set<string> {
   }
   const collectFrom = (jsPlugins: OxlintConfig['jsPlugins']): void => {
     for (const entry of jsPlugins ?? []) {
-      if (typeof entry !== 'string') {
-        continue;
+      const specifier = typeof entry === 'string' ? entry : entry.specifier;
+      const packageName = jsPluginPackageName(specifier);
+      if (packageName) {
+        out.add(packageName);
       }
-      if (entry.startsWith('./') || entry.startsWith('../') || entry.startsWith('/')) {
-        continue;
-      }
-      out.add(entry);
     }
   };
   collectFrom(config.jsPlugins);
@@ -575,6 +573,19 @@ function deriveJsPluginNamespace(packageName: string): string {
   return packageName;
 }
 
+function jsPluginPackageName(specifier: string): string | undefined {
+  if (
+    specifier.startsWith('.') ||
+    specifier.startsWith('/') ||
+    specifier.startsWith('#') ||
+    specifier.includes(':')
+  ) {
+    return undefined;
+  }
+  const parts = specifier.split('/');
+  return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
 /**
  * Collect every dependency name declared across the root + workspace
  * `package.json` files after the ESLint cleanup has run. Used to verify
@@ -712,11 +723,9 @@ function filterRulesAgainstNamespaces(
 }
 
 /**
- * Sort a jsPlugins array into installed entries (kept) and string
- * entries for packages that aren't present in the workspace. Object-form
- * entries (`{ name, specifier }`) and string entries that look like
- * local paths (`./X`, `/X`, `../X`) are passed through — Oxlint resolves
- * them itself.
+ * Sort a jsPlugins array into installed entries (kept) and package
+ * references that aren't present in the workspace. Local-path specifiers
+ * are passed through — Oxlint resolves them itself.
  */
 function partitionJsPlugins(
   entries: NonNullable<OxlintConfig['jsPlugins']>,
@@ -728,21 +737,19 @@ function partitionJsPlugins(
   const kept: NonNullable<OxlintConfig['jsPlugins']> = [];
   const dropped: string[] = [];
   for (const entry of entries) {
-    if (typeof entry !== 'string') {
-      kept.push(entry);
-      continue;
-    }
+    const specifier = typeof entry === 'string' ? entry : entry.specifier;
+    const packageName = jsPluginPackageName(specifier);
     // Local-path specifiers don't go through `package.json`; preserve
     // them so users with hand-authored local plugin imports survive
     // a `vp migrate` re-run.
-    if (entry.startsWith('./') || entry.startsWith('../') || entry.startsWith('/')) {
+    if (!packageName) {
       kept.push(entry);
       continue;
     }
-    if (availablePackages.has(entry)) {
+    if (availablePackages.has(packageName)) {
       kept.push(entry);
     } else {
-      dropped.push(entry);
+      dropped.push(packageName);
     }
   }
   return { kept, dropped };
